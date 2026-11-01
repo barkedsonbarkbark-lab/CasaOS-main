@@ -1,30 +1,77 @@
 #!/usr/bin/env bash
 set -euo pipefail
-REPO_URL='https://github.com/barkedsonbarkbark-lab/CasaOS-main.git'; INSTALL_DIR='/opt/casaos-main'
-[[ $EUID -eq 0 ]] || { echo 'Run with sudo.'; exit 1; }; . /etc/os-release
-case "$ID" in ubuntu|debian) ;; *) echo "Unsupported OS: $ID"; exit 1;; esac
+
+REPO_URL="https://github.com/barkedsonbarkbark-lab/CasaOS-main.git"
+INSTALL_DIR="/opt/casaos-main"
+CONFIG_DIR="/etc/casaos"
+DATA_DIR="/var/lib/casaos"
+LOG_DIR="/var/log/casaos"
+SERVICE="casaos"
+
+if [[ $EUID -ne 0 ]]; then echo "Run with sudo." >&2; exit 1; fi
+if [[ ! -f /etc/os-release ]]; then echo "Unsupported OS." >&2; exit 1; fi
+. /etc/os-release
+
 export DEBIAN_FRONTEND=noninteractive
-apt-get update; apt-get install -y git curl ca-certificates build-essential pkg-config libsqlite3-dev golang-go
-rm -rf "$INSTALL_DIR"; git clone --recurse-submodules "$REPO_URL" "$INSTALL_DIR"; cd "$INSTALL_DIR"; git submodule update --init --recursive
-[[ -f api/casaos/openapi.yaml ]] || { echo 'ERROR: api/casaos/openapi.yaml is missing from the repository.'; exit 1; }
-chmod +x scripts/generate-code.sh; ./scripts/generate-code.sh
-go mod download; go mod tidy; CGO_ENABLED=1 go build -o "$INSTALL_DIR/casa" ./main.go
-id -u casaos >/dev/null 2>&1 || useradd --system --home "$INSTALL_DIR" --shell /usr/sbin/nologin casaos
-chown -R casaos:casaos "$INSTALL_DIR"
-cat >/etc/systemd/system/casaos.service <<UNIT
+apt-get update
+apt-get install -y git curl build-essential ca-certificates pkg-config libsqlite3-dev
+
+# Install Go if it is missing. Prefer the distro package on Ubuntu/Debian.
+if ! command -v go >/dev/null 2>&1; then
+  apt-get install -y golang
+fi
+
+mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR" "$DATA_DIR/conf" /usr/share/casaos/shell
+
+if [[ -d "$INSTALL_DIR/.git" ]]; then
+  git -C "$INSTALL_DIR" fetch --depth=1 origin main
+  git -C "$INSTALL_DIR" reset --hard origin/main
+else
+  rm -rf "$INSTALL_DIR"
+  git clone --depth=1 "$REPO_URL" "$INSTALL_DIR"
+fi
+
+cd "$INSTALL_DIR"
+[[ -f api/casaos/openapi.yaml ]] || { echo "ERROR: api/casaos/openapi.yaml is missing from repository." >&2; exit 1; }
+[[ -f build/sysroot/etc/casaos/casaos.conf.sample ]] || { echo "ERROR: config sample missing." >&2; exit 1; }
+
+# The binary's init path creates the file but cannot create /etc/casaos itself.
+install -m 0644 build/sysroot/etc/casaos/casaos.conf.sample "$CONFIG_DIR/casaos.conf.sample"
+if [[ ! -f "$CONFIG_DIR/casaos.conf" ]]; then
+  install -m 0644 build/sysroot/etc/casaos/casaos.conf.sample "$CONFIG_DIR/casaos.conf"
+fi
+
+./scripts/generate-code.sh
+go mod tidy
+go build -trimpath -o "$INSTALL_DIR/casaos" ./main.go
+install -m 0755 "$INSTALL_DIR/casaos" /usr/local/bin/casaos
+
+cat > /etc/systemd/system/casaos.service <<UNIT
 [Unit]
-Description=CasaOS
-After=network-online.target docker.service
+Description=CasaOS Main Service
+After=network-online.target
 Wants=network-online.target
+
 [Service]
-Type=simple
-User=casaos
+Type=notify
+ExecStart=/usr/local/bin/casaos -c /etc/casaos/casaos.conf
 WorkingDirectory=$INSTALL_DIR
-ExecStart=$INSTALL_DIR/casa
 Restart=on-failure
-RestartSec=5
+RestartSec=3
+LimitNOFILE=65535
+
 [Install]
 WantedBy=multi-user.target
 UNIT
-systemctl daemon-reload; systemctl enable --now casaos
-echo 'CasaOS installed.'
+
+systemctl daemon-reload
+systemctl enable --now "$SERVICE"
+sleep 2
+if ! systemctl is-active --quiet "$SERVICE"; then
+  echo "CasaOS failed to start. Logs:" >&2
+  journalctl -u "$SERVICE" -n 80 --no-pager >&2 || true
+  exit 1
+fi
+
+echo "CasaOS installed and started successfully."
+systemctl --no-pager --full status "$SERVICE" || true
