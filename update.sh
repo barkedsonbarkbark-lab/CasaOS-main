@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
-set -euo pipefail
-if [[ $EUID -ne 0 ]]; then echo "Run with sudo."; exit 1; fi
-cd /opt/casaos-main
-git fetch --all --prune
-git pull --ff-only
-git submodule update --init --recursive
-CGO_ENABLED=1 go build -o casa main.go
-install -Dm755 casa /usr/local/bin/casaos-main
-systemctl restart casaos-main
-systemctl --no-pager --full status casaos-main || true
+set -Eeuo pipefail
+[[ $EUID -eq 0 ]] || { echo 'Run with sudo.' >&2; exit 1; }
+SRC=/opt/casaos-main/source
+BIN=/opt/casaos-main/bin/casaos-main
+[[ -d "$SRC/.git" ]] || { echo "Source not found: $SRC" >&2; exit 1; }
+git -C "$SRC" fetch --all --prune
+git -C "$SRC" checkout main
+git -C "$SRC" pull --ff-only origin main
+git -C "$SRC" submodule update --init --recursive || true
+cd "$SRC"
+CGO_ENABLED=1 go build -o "$BIN" ./main.go
+chmod 0755 "$BIN"
+systemctl restart casaos-main.service
+systemctl --no-pager --full status casaos-main.service
