@@ -1,83 +1,79 @@
 #!/usr/bin/env bash
-set -Eeuo pipefail
+set -euo pipefail
 
-REPO="${CASAOS_REPO:-https://github.com/barkedsonbarkbark-lab/CasaOS-main.git}"
-BRANCH="${CASAOS_BRANCH:-main}"
-PREFIX="${CASAOS_PREFIX:-/opt/casaos-main}"
-DATA="${CASAOS_DATA:-/var/lib/casaos-main}"
-SERVICE="casaos-main.service"
-SRC="$PREFIX/source"
-BIN="$PREFIX/bin/casaos-main"
+REPO="https://github.com/barkedsonbarkbark-lab/CasaOS-main.git"
+INSTALL_DIR="/opt/casaos-main"
+BIN_PATH="/usr/local/bin/casaos"
+CONFIG_DIR="/etc/casaos"
+CONFIG_FILE="$CONFIG_DIR/casaos.conf"
+SERVICE_FILE="/etc/systemd/system/casaos.service"
+DATA_DIR="/var/lib/casaos"
+LOG_DIR="/var/log/casaos"
+RUNTIME_DIR="/var/run/casaos"
 
-log(){ printf '\n\033[1;36m[CasaOS-ZimaOS]\033[0m %s\n' "$*"; }
+log(){ printf '\n[%s] %s\n' "CasaOS" "$*"; }
 die(){ echo "ERROR: $*" >&2; exit 1; }
-trap 'die "Installation failed at line $LINENO."' ERR
 
-[[ $EUID -eq 0 ]] || die "Run with sudo."
-[[ -r /etc/os-release ]] || die "Cannot detect Linux distribution."
+[[ "$(id -u)" -eq 0 ]] || die "Run as root: curl -fsSL https://raw.githubusercontent.com/barkedsonbarkbark-lab/CasaOS-main/main/install.sh | sudo bash"
+[[ -f /etc/os-release ]] || die "Cannot detect Linux distribution."
 . /etc/os-release
-[[ "$ID" == ubuntu || "$ID_LIKE" == *debian* ]] || die "Ubuntu/Debian is required."
+case "${ID:-}" in
+  ubuntu|debian|linuxmint|pop) ;;
+  *) die "This installer currently supports Ubuntu/Debian-based systems. Detected: ${ID:-unknown}" ;;
+esac
 
-log "Installing build/runtime dependencies"
 export DEBIAN_FRONTEND=noninteractive
+log "Installing build dependencies"
 apt-get update
-apt-get install -y git curl ca-certificates build-essential pkg-config libsqlite3-dev smartmontools parted ntfs-3g net-tools samba cifs-utils udevil golang-go nodejs npm
+apt-get install -y ca-certificates curl git build-essential pkg-config libsqlite3-dev
 
-if ! command -v yarn >/dev/null 2>&1; then
-  npm install -g yarn
+if ! command -v go >/dev/null 2>&1; then
+  log "Installing Go"
+  apt-get install -y golang
 fi
 
-if ! command -v docker >/dev/null 2>&1; then
-  log "Installing Docker from Ubuntu packages"
-  apt-get install -y docker.io docker-compose-v2
-fi
-systemctl enable --now docker
+go version || die "Go installation failed."
 
 log "Preparing source tree"
-mkdir -p "$PREFIX" "$DATA"
-if [[ -d "$SRC/.git" ]]; then
-  git -C "$SRC" fetch --all --prune
-  git -C "$SRC" checkout "$BRANCH"
-  git -C "$SRC" pull --ff-only origin "$BRANCH"
+if [[ -d "$INSTALL_DIR/.git" ]]; then
+  git -C "$INSTALL_DIR" fetch --all --prune
+  git -C "$INSTALL_DIR" reset --hard origin/main
+  git -C "$INSTALL_DIR" submodule sync --recursive
+  git -C "$INSTALL_DIR" submodule update --init --recursive
 else
-  rm -rf "$SRC"
-  git clone --branch "$BRANCH" --recurse-submodules "$REPO" "$SRC"
+  rm -rf "$INSTALL_DIR"
+  git clone --recurse-submodules "$REPO" "$INSTALL_DIR"
 fi
 
-git -C "$SRC" submodule update --init --recursive || true
+cd "$INSTALL_DIR"
 
-# The repository's Makefile references CasaOS-UI; the historical source stores it as a submodule.
-if [[ ! -d "$SRC/CasaOS-UI" ]]; then
-  git -C "$SRC" clone --depth 1 https://github.com/IceWhaleTech/CasaOS-UI.git "$SRC/CasaOS-UI"
-fi
+[[ -f api/casaos/openapi.yaml ]] || die "api/casaos/openapi.yaml is missing from the repository. Push the file from the provided project ZIP to GitHub."
+
+log "Generating missing Go code"
+./scripts/generate-code.sh
 
 log "Building CasaOS backend"
-cd "$SRC"
-export CGO_ENABLED=1
-go build -o "$BIN" ./main.go
-chmod 0755 "$BIN"
+CGO_ENABLED=1 go build -o "$INSTALL_DIR/casaos" ./main.go
+install -m 0755 "$INSTALL_DIR/casaos" "$BIN_PATH"
 
-# Install the repository's helper files without overwriting unrelated system files.
-mkdir -p /etc/casaos-main /var/log/casaos-main
-if [[ -f "$SRC/build/sysroot/etc/casaos/casaos.conf.sample" ]]; then
-  cp -n "$SRC/build/sysroot/etc/casaos/casaos.conf.sample" /etc/casaos-main/casaos.conf || true
+log "Installing configuration and directories"
+mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR" "$RUNTIME_DIR"
+if [[ ! -f "$CONFIG_FILE" ]]; then
+  install -m 0644 build/sysroot/etc/casaos/casaos.conf.sample "$CONFIG_FILE"
 fi
 
-cat > /etc/systemd/system/$SERVICE <<UNIT
+cat > "$SERVICE_FILE" <<UNIT
 [Unit]
-Description=CasaOS Main (barkedsonbarkbark-lab build)
-After=network-online.target docker.service
+Description=CasaOS Main Service (custom build)
+After=network-online.target
 Wants=network-online.target
-Requires=docker.service
 
 [Service]
-Type=simple
-User=root
-WorkingDirectory=$SRC
-ExecStart=$BIN
+Type=notify
+ExecStart=$BIN_PATH -c $CONFIG_FILE
 Restart=on-failure
 RestartSec=3
-LimitNOFILE=1048576
+WorkingDirectory=$INSTALL_DIR
 Environment=HOME=/root
 
 [Install]
@@ -85,31 +81,12 @@ WantedBy=multi-user.target
 UNIT
 
 systemctl daemon-reload
-systemctl enable --now "$SERVICE"
-sleep 2
+systemctl enable casaos.service
+systemctl restart casaos.service || true
 
-if systemctl is-active --quiet "$SERVICE"; then
-  log "Backend service is running."
-else
-  journalctl -u "$SERVICE" -n 80 --no-pager || true
-  die "Backend service did not start."
-fi
-
-cat > /usr/local/bin/casaos-main-status <<'STATUS'
-#!/usr/bin/env bash
-systemctl --no-pager status casaos-main.service
-STATUS
-chmod +x /usr/local/bin/casaos-main-status
-
-cat > /usr/local/bin/casaos-main-update <<'UPDATE'
-#!/usr/bin/env bash
-set -euo pipefail
-exec /opt/casaos-main/source/update.sh
-UPDATE
-chmod +x /usr/local/bin/casaos-main-update
-
-log "Installation complete."
-echo "Source: $SRC"
-echo "Service: $SERVICE"
-echo "Status: systemctl status $SERVICE"
-echo "Logs:   journalctl -u $SERVICE -f"
+log "Installation completed"
+echo "Binary: $BIN_PATH"
+echo "Source: $INSTALL_DIR"
+echo "Service: systemctl status casaos"
+echo "Logs: journalctl -u casaos -f"
+echo "NOTE: CasaOS main depends on the CasaOS gateway/message-bus ecosystem for a complete UI deployment."
