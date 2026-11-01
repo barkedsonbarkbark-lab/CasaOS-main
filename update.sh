@@ -1,16 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
-INSTALL_DIR="/opt/casaos-main"
-[[ "$(id -u)" -eq 0 ]] || { echo "Run as root." >&2; exit 1; }
-[[ -d "$INSTALL_DIR/.git" ]] || { echo "CasaOS is not installed at $INSTALL_DIR." >&2; exit 1; }
-cd "$INSTALL_DIR"
-git fetch --all --prune
-git reset --hard origin/main
-git submodule sync --recursive
+ROOT="/opt/casaos-main"
+cd "$ROOT"
+git pull --ff-only
 git submodule update --init --recursive
+[[ -f api/casaos/openapi.yaml ]] || { echo 'ERROR: api/casaos/openapi.yaml missing'; exit 1; }
 ./scripts/generate-code.sh
-CGO_ENABLED=1 go build -o casaos ./main.go
-install -m 0755 casaos /usr/local/bin/casaos
-systemctl daemon-reload
-systemctl restart casaos.service
-echo "CasaOS updated successfully."
+go mod download
+go mod tidy
+CGO_ENABLED=1 go build -o casa main.go
+install -m 0755 casa /usr/local/bin/casaos-main
+systemctl restart casaos-main
+echo 'Update complete.'

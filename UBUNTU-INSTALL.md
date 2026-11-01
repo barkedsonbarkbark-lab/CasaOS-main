@@ -1,30 +1,32 @@
 # Ubuntu/Debian installation
 
-After pushing this repository to GitHub, install with:
+This repository contains the CasaOS main backend plus an installer that clones the repository and its UI submodule.
+
+## One command
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/barkedsonbarkbark-lab/CasaOS-main/main/install.sh | sudo bash
 ```
 
-The installer clones the repository with submodules, verifies `api/casaos/openapi.yaml`, generates the missing `codegen` packages with `oapi-codegen`, builds the backend, and creates a systemd service.
+The installer verifies `api/casaos/openapi.yaml` before generating Go code. It then generates both the CasaOS OpenAPI server code and CasaOS MessageBus client code before compiling.
 
-Check:
+## Verify
 
 ```bash
-sudo systemctl status casaos
-sudo journalctl -u casaos -n 100 --no-pager
+systemctl status casaos-main
+journalctl -u casaos-main -n 100 --no-pager
 ```
 
-Update:
+## Update
 
 ```bash
 sudo /opt/casaos-main/update.sh
 ```
 
-Uninstall the main service (data/config are preserved):
+## Uninstall backend
 
 ```bash
 sudo /opt/casaos-main/uninstall.sh
 ```
 
-This repository is the CasaOS main service. A complete CasaOS deployment also requires the gateway, message bus, user service, local storage, app management, and UI components.
+Configuration and data under `/etc/casaos` and `/var/lib/casaos` are intentionally preserved by the uninstall script.
