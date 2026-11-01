@@ -1,14 +1,10 @@
-.PHONY:build build-ui build-backend help
-
-build: build-ui build-backend
-
-
-build-ui:
-	cd CasaOS-UI && yarn install && yarn build
-
-build-backend:
+.PHONY: build build-backend build-ui generate-code help
+build: build-backend
+build-backend: generate-code
+	CGO_ENABLED=1 go build -o ./casa ./main.go
+generate-code:
 	./scripts/generate-code.sh
-	export CGO_ENABLED=1;export CGO_LDFLAGS=-static;go build -o ./casa main.go;upx --lzma --best casa
-
+build-ui:
+	@if [ -d UI ]; then cd UI && yarn install && yarn build; else echo 'UI submodule not initialized; skipping UI build.'; fi
 help:
-	@echo "call john"
+	@echo 'make build-backend | generate-code | build-ui'
