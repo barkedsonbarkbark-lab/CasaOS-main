@@ -115,7 +115,6 @@ func main() {
 			"v2":  v2Router,
 			"v3":  v3File,
 			"doc": v2DocRouter,
-			"web": route.InitWeb(),
 		},
 	}
 
@@ -141,7 +140,6 @@ func main() {
 		"/v1/samba",
 		"/v1/notify",
 		"/v1/driver",
-		"/v1/docker",
 		"/v1/cloud",
 		"/v1/recover",
 		"/v1/other",
@@ -150,7 +148,6 @@ func main() {
 		route.V2APIPath,
 		route.V2DocPath,
 		route.V3FilePath,
-		"/ui",
 	}
 	for _, apiPath := range routers {
 		err = service.MyService.Gateway().CreateRoute(&model.Route{

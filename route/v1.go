@@ -135,15 +135,6 @@ func InitV1Router() http.Handler {
 			v1DriverGroup.GET("", v1.ListDriverInfo)
 		}
 
-		v1DockerGroup := v1Group.Group("/docker")
-		{
-			v1DockerGroup.GET("/containers", v1.ListDockerContainers)
-			v1DockerGroup.POST("/containers/:id/:action", v1.DockerContainerAction)
-			v1DockerGroup.GET("/containers/:id/logs", v1.DockerContainerLogs)
-			v1DockerGroup.GET("/containers/:id/stats", v1.DockerContainerStats)
-			v1DockerGroup.POST("/compose", v1.DockerComposeUp)
-		}
-
 		v1FolderGroup := v1Group.Group("/folder")
 		v1FolderGroup.Use()
 		{
